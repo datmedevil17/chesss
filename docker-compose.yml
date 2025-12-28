@@ -1,0 +1,45 @@
+services:
+  server:
+    build: 
+      context: ./server
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - DATABASE_URL=postgres://user:password@db:5432/chess_db
+      - JWT_SECRET=dev_secret
+    depends_on:
+      - db
+    networks:
+      - chess-network
+
+  client:
+    build:
+      context: ./client
+    ports:
+      - "5173:80"
+    depends_on:
+      - server
+    networks:
+      - chess-network
+
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=chess_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - chess-network
+
+networks:
+  chess-network:
+    driver: bridge
+
+volumes:
+  db_data:
