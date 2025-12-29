@@ -9,10 +9,12 @@ interface Message {
   isSystem?: boolean;
 }
 
-export default function Chat() {
-  const [messages, setMessages] = useState<Message[]>([
-    { id: '1', sender: 'System', text: 'Welcome to the game! Good luck.', timestamp: new Date(), isSystem: true }
-  ]);
+interface ChatProps {
+  messages: Message[];
+  onSendMessage: (text: string) => void;
+}
+
+export default function Chat({ messages, onSendMessage }: ChatProps) {
   const [inputValue, setInputValue] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -26,14 +28,7 @@ export default function Chat() {
     e?.preventDefault();
     if (!inputValue.trim()) return;
 
-    const newMessage: Message = {
-      id: Date.now().toString(),
-      sender: 'You',
-      text: inputValue.trim(),
-      timestamp: new Date(),
-    };
-
-    setMessages(prev => [...prev, newMessage]);
+    onSendMessage(inputValue.trim());
     setInputValue('');
   };
 

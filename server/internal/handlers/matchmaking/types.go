@@ -8,4 +8,5 @@ type JoinQueueRequest struct {
 
 type MatchFoundResponse struct {
 	GameID string `json:"game_id"`
+	Color  string `json:"color"` // "white" | "black"
 }

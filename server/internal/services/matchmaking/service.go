@@ -27,9 +27,9 @@ func (s *Service) JoinQueue(
 		UserID:      userID,
 		Mode:        mode,
 		TimeControl: timeControl,
-		MinRating:  rating - 100,
-		MaxRating:  rating + 100,
-		JoinedAt:   time.Now(),
+		MinRating:   rating - 100,
+		MaxRating:   rating + 100,
+		JoinedAt:    time.Now(),
 	}
 
 	return database.GetDB().Create(entry).Error
@@ -75,14 +75,24 @@ func (s *Service) TryMatch(userID uint) (*models.Game, error) {
 	}
 
 	// Create game
+	// Randomize Color
+	var whiteID, blackID uint
+	if time.Now().UnixNano()%2 == 0 {
+		whiteID = player.UserID
+		blackID = opponent.UserID
+	} else {
+		whiteID = opponent.UserID
+		blackID = player.UserID
+	}
+
 	game := &models.Game{
 		ID:          uuid.NewString(),
-		WhiteID:     player.UserID,
-		BlackID:     opponent.UserID,
+		WhiteID:     whiteID,
+		BlackID:     blackID,
 		Status:      "active",
 		Mode:        player.Mode,
 		TimeControl: player.TimeControl,
-		FEN:         "startpos",
+		FEN:         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
 		StartedAt:   ptrTime(time.Now()),
 	}
 
@@ -100,6 +110,18 @@ func (s *Service) TryMatch(userID uint) (*models.Game, error) {
 	tx.Commit()
 
 	return game, nil
+}
+
+// Check if user has an active match (polling)
+func (s *Service) CheckActiveMatch(userID uint) (*models.Game, error) {
+	var game models.Game
+	if err := database.GetDB().
+		Where("(white_id = ? OR black_id = ?) AND status = 'active'", userID, userID).
+		Order("started_at DESC").
+		First(&game).Error; err != nil {
+		return nil, err
+	}
+	return &game, nil
 }
 
 func ptrTime(t time.Time) *time.Time {

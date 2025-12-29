@@ -18,7 +18,7 @@ func InitRouter(cfg *config.Config) *gin.Engine {
 	// Handlers
 	userHandler := user.NewHandler()
 	matchmakingHandler := matchmaking.NewHandler()
-	gameHandler := game.NewHandler()
+	gameHandler := game.NewHandler(cfg.JWTSecret)
 
 	api := r.Group("/api/v1")
 	{
@@ -36,6 +36,7 @@ func InitRouter(cfg *config.Config) *gin.Engine {
 		{
 			mm.POST("/join", matchmakingHandler.Join)
 			mm.POST("/leave", matchmakingHandler.Leave)
+			mm.GET("/active", matchmakingHandler.CheckActiveMatch)
 		}
 
 		// Game Routes

@@ -18,6 +18,10 @@ func main() {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
+	if err := database.Migrate(); err != nil {
+		log.Fatalf("Failed to run migrations: %v", err)
+	}
+
 	r := api.InitRouter(cfg)
 
 	log.Printf("Server starting on port %s", cfg.Port)

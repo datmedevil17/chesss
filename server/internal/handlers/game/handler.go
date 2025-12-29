@@ -1,9 +1,14 @@
 package game
 
 import (
+	"encoding/json"
+	"log"
 	"net/http"
 
+	"github.com/datmedevil17/chesss/internal/database"
+	"github.com/datmedevil17/chesss/internal/models"
 	"github.com/datmedevil17/chesss/internal/services/game"
+	"github.com/datmedevil17/chesss/internal/utils"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
@@ -13,17 +18,46 @@ var upgrader = websocket.Upgrader{
 }
 
 type Handler struct {
-	hub *game.Hub
+	hub       *game.Hub
+	jwtSecret string
 }
 
-func NewHandler() *Handler {
+func NewHandler(jwtSecret string) *Handler {
 	return &Handler{
-		hub: game.NewHub(),
+		hub:       game.NewHub(),
+		jwtSecret: jwtSecret,
 	}
 }
 
 func (h *Handler) WSHandler(c *gin.Context) {
 	gameID := c.Param("gameId")
+	tokenString := c.Query("token")
+
+	// 1. Validate Token
+	var userID uint
+	if tokenString != "" {
+		claims, err := utils.ValidateToken(tokenString, h.jwtSecret)
+		if err == nil {
+			userID = claims.UserID
+		} else {
+			log.Printf("Invalid token: %v", err)
+		}
+	}
+
+	// 2. Fetch Game to determine Role
+	var role = "spectator"
+	var gameModel models.Game
+	if err := database.GetDB().Where("id = ?", gameID).First(&gameModel).Error; err != nil {
+		log.Printf("Game not found: %v", err)
+		// We might still allow connection as spectator or just return?
+		// For now, let's proceed but role will certainly be spectator if game not found (or error)
+	} else {
+		if userID == gameModel.WhiteID {
+			role = "white"
+		} else if userID == gameModel.BlackID {
+			role = "black"
+		}
+	}
 
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
@@ -31,9 +65,13 @@ func (h *Handler) WSHandler(c *gin.Context) {
 	}
 
 	client := &game.Client{
-		Conn: conn,
-		Send: make(chan []byte),
+		Conn:   conn,
+		Send:   make(chan []byte, 256), // Buffered to avoid deadlock
+		UserID: userID,
+		Role:   role,
 	}
+
+	log.Printf("New Client Connected: UserID=%d, Role=%s, GameID=%s", userID, role, gameID)
 
 	room := h.hub.GetRoom(gameID)
 	room.Register <- client
@@ -45,31 +83,27 @@ func (h *Handler) WSHandler(c *gin.Context) {
 		game.NewBot(room, "stockfish")
 	}
 
-	// Start reading from client (needed for processing pong/close frames)
-	// For now, we just define a simple reader loop to keep connection alive
-	go func() {
-		defer func() {
-			room.Unregister <- client
-			conn.Close()
-		}()
-		for {
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				break
-			}
-			// Broadcast message to all clients in the room
-			room.Broadcast <- msg
-		}
-	}()
+	// Send Init JSON
+	fen := gameModel.FEN
+	if fen == "" || fen == "startpos" {
+		fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+	}
+	initMsg := game.WSMessage{
+		Type: game.MsgInit,
+		Payload: game.InitPayload{
+			FEN:     fen,
+			WhiteID: gameModel.WhiteID,
+			BlackID: gameModel.BlackID,
+			Status:  gameModel.Status,
+			Color:   role,
+			// History: []string{}, // TODO: Populate from DB
+		},
+	}
+	initBytes, _ := json.Marshal(initMsg)
+	client.Send <- initBytes
 
-	// Writing loop is handled by the Room broadcasting to Client.Send
-	// We need a writer routine for the client
-	go func() {
-		defer conn.Close()
-		for msg := range client.Send {
-			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-				break
-			}
-		}
-	}()
+	// Allow collection of memory referenced by the caller by doing all work in
+	// new goroutines.
+	go client.WritePump()
+	go client.ReadPump(room)
 }

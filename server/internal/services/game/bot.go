@@ -1,14 +1,16 @@
 package game
 
 import (
+	"encoding/json"
 	"log"
 
 	"github.com/datmedevil17/chesss/internal/services/engine"
 )
 
 type Bot struct {
-	Client *Client
-	Engine *engine.Engine
+	Client  *Client
+	Engine  *engine.Engine
+	History []string
 }
 
 func NewBot(room *GameRoom, enginePath string) *Bot {
@@ -20,11 +22,13 @@ func NewBot(room *GameRoom, enginePath string) *Bot {
 
 	botClient := &Client{
 		Send: make(chan []byte),
+		Role: "black",
 	}
 
 	bot := &Bot{
-		Client: botClient,
-		Engine: eng,
+		Client:  botClient,
+		Engine:  eng,
+		History: make([]string, 0),
 	}
 
 	// Register bot to room
@@ -40,18 +44,44 @@ func (b *Bot) Run(room *GameRoom) {
 	defer b.Engine.Close()
 
 	for msg := range b.Client.Send {
-		// msg is expected to be the FEN string or a JSON with FEN
-		// For simplicity, let's assume raw FEN for now (or basic move notation)
-		// Only move if it's bot's turn.
-		// TODO: Parse FEN to check turn. check if it's black or white.
+		// Client now broadcasts raw JSON bytes. We need to unmarshal to find the move string?
+		// Actually, Bot is a Client. It receives what is broadcasted to the room.
+		// If Client sends JSON, Bot receives JSON bytes.
+		// We need to parse it.
 
-		// For now, we blindly reply with a best move if message looks like a FEN
-		fen := string(msg)
-		if len(fen) > 10 { // Basic sanity check
-			bestMove, err := b.Engine.GetBestMove(fen, 10)
+		var wsMsg WSMessage
+		if err := json.Unmarshal(msg, &wsMsg); err != nil {
+			log.Printf("Bot could not parse message: %v", err)
+			continue
+		}
+
+		// Only respond to Moves
+		if wsMsg.Type != MsgMove {
+			continue
+		}
+
+		moveStr, ok := wsMsg.Payload.(string)
+		if !ok {
+			continue
+		}
+
+		// Append move to history (which we maintain in Bot struct)
+		b.History = append(b.History, moveStr)
+
+		// Bot plays as Black (moves 2, 4, 6...)
+		// If history length is odd, it means White just moved. Bot's turn.
+		if len(b.History)%2 != 0 {
+			bestMove, err := b.Engine.GetBestMoveFromHistory(b.History, 1000)
 			if err == nil {
-				// Send move back to room
-				room.Broadcast <- []byte(bestMove)
+				// Construct JSON Move
+				respMsg := WSMessage{
+					Type:    MsgMove,
+					Payload: bestMove,
+				}
+				respBytes, _ := json.Marshal(respMsg)
+				room.Broadcast <- respBytes
+			} else {
+				log.Printf("Bot failed to find move: %v", err)
 			}
 		}
 	}

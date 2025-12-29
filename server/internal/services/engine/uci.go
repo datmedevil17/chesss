@@ -77,6 +77,41 @@ func (e *Engine) GetBestMove(fen string, depth int) (string, error) {
 	return "", fmt.Errorf("engine closed unexpectedly")
 }
 
+func (e *Engine) GetBestMoveFromHistory(moves []string, depth int) (string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Reset and set position with history
+	// "position startpos moves e2e4 e7e5 ..."
+	cmd := "position startpos"
+	if len(moves) > 0 {
+		cmd += " moves " + strings.Join(moves, " ")
+	}
+
+	e.stdin.WriteString("ucinewgame\n")
+	e.stdin.WriteString(cmd + "\n")
+	e.stdin.WriteString(fmt.Sprintf("go depth %d\n", depth))
+	e.stdin.Flush()
+
+	// Read output until bestmove
+	for e.stdout.Scan() {
+		line := e.stdout.Text()
+		if strings.HasPrefix(line, "bestmove") {
+			parts := strings.Split(line, " ")
+			if len(parts) >= 2 {
+				return parts[1], nil
+			}
+			return "", fmt.Errorf("invalid bestmove line: %s", line)
+		}
+	}
+
+	if err := e.stdout.Err(); err != nil {
+		return "", err
+	}
+
+	return "", fmt.Errorf("engine closed unexpectedly")
+}
+
 func (e *Engine) Close() {
 	if e.cmd != nil {
 		e.cmd.Process.Kill()

@@ -40,8 +40,15 @@ func (h *Handler) Join(c *gin.Context) {
 	// Try matching immediately
 	game, err := h.service.TryMatch(userID)
 	if err == nil {
+		color := "black"
+		if game.WhiteID == userID {
+			color = "white"
+		}
 		utils.SuccessResponse(c, http.StatusOK, "Match found",
-			MatchFoundResponse{GameID: game.ID})
+			MatchFoundResponse{
+				GameID: game.ID,
+				Color:  color,
+			})
 		return
 	}
 
@@ -57,4 +64,25 @@ func (h *Handler) Leave(c *gin.Context) {
 	}
 
 	utils.SuccessResponse(c, http.StatusOK, "Left queue", nil)
+}
+
+func (h *Handler) CheckActiveMatch(c *gin.Context) {
+	userID := c.GetUint("userID")
+
+	game, err := h.service.CheckActiveMatch(userID)
+	if err != nil {
+		utils.ErrorResponse(c, 404, "No active match found")
+		return
+	}
+
+	color := "black"
+	if game.WhiteID == userID {
+		color = "white"
+	}
+
+	utils.SuccessResponse(c, http.StatusOK, "Active match found",
+		MatchFoundResponse{
+			GameID: game.ID,
+			Color:  color,
+		})
 }

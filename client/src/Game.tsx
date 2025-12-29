@@ -2,28 +2,34 @@ import { useState, useEffect, useRef } from 'react';
 import { Chess, type Square } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, RefreshCw } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Crown } from 'lucide-react';
 import MoveList from './components/MoveList';
 import PlayerCard from './components/PlayerCard';
 import Chat from './components/Chat';
+import { useAuth } from './context/AuthContext';
 
 export default function Game() {
   const [game, setGame] = useState(new Chess());
   const [moveHistory, setMoveHistory] = useState<string[]>([]);
+  const [messages, setMessages] = useState<any[]>([]);
+  const [status, setStatus] = useState("Connecting...");
   const [whiteTime, setWhiteTime] = useState(600);
   const [blackTime, setBlackTime] = useState(600);
   const [optionSquares, setOptionSquares] = useState<Record<string, { background: string; borderRadius?: string }>>({});
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const socketRef = useRef<WebSocket | null>(null);
+  const { token } = useAuth();
 
   // Generate a random game ID if none provided (mock matchmaking)
   const gameId = searchParams.get('id') || 'test-room'; 
   const isBot = searchParams.get('bot') === 'true';
+  const [playerColor, setPlayerColor] = useState(searchParams.get('color') || 'white'); 
+
 
   useEffect(() => {
     // Connect to WebSocket
-    const wsUrl = `ws://localhost:8080/api/v1/game/ws/${gameId}${isBot ? '?bot=true' : ''}`;
+    const wsUrl = `ws://localhost:8080/api/v1/game/ws/${gameId}?token=${token}${isBot ? '&bot=true' : ''}`;
     console.log("Connecting to", wsUrl);
     const ws = new WebSocket(wsUrl);
 
@@ -32,32 +38,55 @@ export default function Game() {
     };
 
     ws.onmessage = (event) => {
-        const msg = event.data;
-        // Basic protocol: just sending move strings (LAN/SAN) or FEN for now
-        // Ideally use JSON { type: 'move', data: ... }
-        console.log("Received:", msg);
-        
         try {
-            // Attempt to apply move
-             // We need to sync game state safely
-             setGame((prevGame) => {
-                 const g = new Chess(prevGame.fen());
-                 try {
-                     g.move(msg); // Try Notated move
-                 } catch {
-                     // If it's a raw bestmove string like "e2e4"
-                     try {
-                        g.move({ from: msg.slice(0,2), to: msg.slice(2,4) });
-                     } catch (e2) {
-                        console.error("Invalid move received", msg);
-                        return prevGame;
-                     }
-                 }
-                 setMoveHistory(g.history());
-                 return g;
-             });
+            const data = JSON.parse(event.data);
+            console.log("WS Data:", data);
+
+            switch (data.type) {
+                case 'init':
+                    // Initialize game state
+                    const { fen, history, color, status } = data.payload;
+                    const newGame = new Chess(fen);
+                    setGame(newGame);
+                    if (color) setPlayerColor(color);
+                    setMoveHistory(history || []);
+                    if (status) setStatus(status === 'active' ? 'Active' : 'Waiting for opponent');
+                    break;
+
+                case 'move':
+                    // Handle opponent move
+                    const moveStr = data.payload; // UCI string e.g. "e2e4"
+                    setGame((prevGame) => {
+                        const g = new Chess(prevGame.fen());
+                        try {
+                           // Try raw move first (San)
+                           g.move(moveStr);
+                        } catch {
+                           try {
+                             // Try UCI
+                             g.move({ from: moveStr.slice(0,2), to: moveStr.slice(2,4), promotion: moveStr.length > 4 ? moveStr[4] : 'q' });
+                           } catch (e) {
+                             console.error("Invalid move", moveStr);
+                             return prevGame;
+                           }
+                        }
+                        setMoveHistory(g.history());
+                        return g;
+                    });
+                    break;
+
+                case 'chat':
+                    setMessages(prev => [...prev, {
+                        id: Date.now().toString(),
+                        sender: data.payload.sender, // "white" or "black"
+                        text: data.payload.text,
+                        timestamp: new Date(),
+                        isSystem: false
+                    }]);
+                    break;
+            }
         } catch (e) {
-            console.error("Failed to parse message", e);
+            console.error("Failed to parse WS message", e);
         }
     };
 
@@ -66,7 +95,7 @@ export default function Game() {
     return () => {
       ws.close();
     };
-  }, [gameId, isBot]);
+  }, [gameId, isBot, token]);
 
   // Timer logic (simplified)
   useEffect(() => {
@@ -93,7 +122,12 @@ export default function Game() {
             // Send SAN (e.g. "Nf3") or UCI (e.g. "g1f3")
             // Stockfish prefers UCI "fromto". Chess.js move object has it.
            const uci = result.from + result.to + (result.promotion || '');
-           socketRef.current.send(uci);
+           
+           // Send JSON Move
+           socketRef.current.send(JSON.stringify({
+               type: 'move',
+               payload: uci
+           }));
         }
 
         return result; 
@@ -190,7 +224,14 @@ export default function Game() {
               isBlack
            />
            <div className="flex-1 min-h-[300px]">
-             <Chat />
+             <Chat messages={messages} onSendMessage={(text) => {
+                if (socketRef.current) {
+                    socketRef.current.send(JSON.stringify({
+                        type: 'chat',
+                        payload: { text }
+                    }));
+                }
+             }} />
            </div>
            <PlayerCard 
               name="You" 
@@ -210,7 +251,44 @@ export default function Game() {
                   customSquareStyles={optionSquares}
                   customDarkSquareStyle={{ backgroundColor: '#779954' }}
                   customLightSquareStyle={{ backgroundColor: '#e9edcc' }}
+                  boardOrientation={playerColor === 'black' ? 'black' : 'white'}
               />
+              {status !== 'Active' && (
+                  <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center rounded-lg z-10">
+                      <div className="bg-neutral-800 p-6 rounded-xl border border-neutral-700 shadow-2xl flex flex-col items-center gap-4 animate-in fade-in zoom-in">
+                          <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
+                          <div className="text-xl font-bold text-white">{status}</div>
+                          {status === 'Waiting for opponent' && (
+                              <div className="text-sm text-neutral-400">Share this URL to invite a friend</div>
+                          )}
+                      </div>
+                  </div>
+              )}
+              {isGameOver && (
+                  <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center rounded-lg z-20 animate-in fade-in zoom-in">
+                      <div className="bg-neutral-800 p-8 rounded-2xl border border-amber-500/20 shadow-2xl flex flex-col items-center gap-6 text-center">
+                          <Crown size={48} className="text-amber-500" />
+                          <div>
+                              <div className="text-4xl font-bold bg-gradient-to-r from-amber-200 to-amber-500 bg-clip-text text-transparent mb-2">
+                                  {game.isCheckmate() 
+                                      ? (game.turn() === (playerColor === 'white' ? 'b' : 'w') ? "VICTORY" : "DEFEAT") 
+                                      : "DRAW"}
+                              </div>
+                              <div className="text-neutral-400">
+                                  {game.isCheckmate() 
+                                      ? `by Checkmate` 
+                                      : `by ${game.isDraw() ? 'Insufficient Material' : 'Stalemate'}`}
+                              </div>
+                          </div>
+                          <button 
+                            onClick={resetGame}
+                            className="px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-lg transition-transform hover:scale-105"
+                          >
+                            Play Again
+                          </button>
+                      </div>
+                  </div>
+              )}
             </div>
           </div>
           
