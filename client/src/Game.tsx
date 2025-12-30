@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Chess, type Square } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, RefreshCw, Crown, Share2, LogOut } from 'lucide-react';
+import { ArrowLeft, Crown, Share2, LogOut, Flag } from 'lucide-react';
 import MoveList from './components/MoveList';
 import PlayerCard from './components/PlayerCard';
 import Chat from './components/Chat';
@@ -37,6 +37,7 @@ export default function Game() {
   const [isSpectator, setIsSpectator] = useState(false);
   const [whiteName, setWhiteName] = useState('White Player');
   const [blackName, setBlackName] = useState('Black Player');
+  const [gameResult, setGameResult] = useState<{ winner: string; reason: string } | null>(null);
   const lastSentMoveRef = useRef<string | null>(null); // Track last move we sent to skip echo
 
 
@@ -152,6 +153,13 @@ export default function Game() {
                         isSystem: false
                     }]);
                     break;
+
+                case 'game_over':
+                    // Handle game over from server (when opponent resigns/timeouts)
+                    const { winner, reason } = data.payload;
+                    console.log("Game over received:", winner, reason);
+                    setGameResult({ winner, reason });
+                    break;
             }
         } catch (e) {
             console.error("Failed to parse WS message", e);
@@ -169,7 +177,7 @@ export default function Game() {
   // If it's MY turn: my clock decrements, opponent's is frozen
   // If it's OPPONENT's turn: opponent's clock decrements, mine is frozen
   useEffect(() => {
-    if (game.isGameOver()) return;
+    if (game.isGameOver() || gameResult) return;
     const timer = setInterval(() => {
       const now = Date.now();
       const elapsedSeconds = Math.floor((now - lastMoveAt) / 1000);
@@ -181,18 +189,64 @@ export default function Game() {
       // Is it my turn?
       const isMyTurn = currentTurn === playerColor;
       
+      let newMyTime = myTime;
+      let newOpponentTime = opponentTime;
+      
       if (isMyTurn) {
         // My clock is running
-        setMyTime(Math.max(0, myFrozenTime - elapsedSeconds));
-        setOpponentTime(oppFrozenTime); // Opponent's clock is frozen
+        newMyTime = Math.max(0, myFrozenTime - elapsedSeconds);
+        newOpponentTime = oppFrozenTime;
+        setMyTime(newMyTime);
+        setOpponentTime(newOpponentTime);
+        
+        // Timeout detection - I ran out of time
+        if (newMyTime <= 0 && !isSpectator) {
+          const winner = playerColor === 'white' ? 'black' : 'white';
+          setGameResult({ winner, reason: 'timeout' });
+          if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({
+              type: 'game_over',
+              payload: { result: winner === 'white' ? '1-0' : '0-1', reason: 'timeout', winner }
+            }));
+          }
+        }
       } else {
         // Opponent's clock is running
-        setOpponentTime(Math.max(0, oppFrozenTime - elapsedSeconds));
-        setMyTime(myFrozenTime); // My clock is frozen
+        newOpponentTime = Math.max(0, oppFrozenTime - elapsedSeconds);
+        newMyTime = myFrozenTime;
+        setOpponentTime(newOpponentTime);
+        setMyTime(newMyTime);
+        
+        // Opponent timeout - I win
+        if (newOpponentTime <= 0 && !isSpectator) {
+          const winner = playerColor;
+          setGameResult({ winner, reason: 'timeout' });
+          if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({
+              type: 'game_over',
+              payload: { result: winner === 'white' ? '1-0' : '0-1', reason: 'timeout', winner }
+            }));
+          }
+        }
       }
     }, 100);
     return () => clearInterval(timer);
-  }, [game, frozenWhiteTime, frozenBlackTime, lastMoveAt, currentTurn, playerColor]);
+  }, [game, frozenWhiteTime, frozenBlackTime, lastMoveAt, currentTurn, playerColor, gameResult, isSpectator]);
+
+  // Resign function
+  function handleResign() {
+    if (isSpectator || game.isGameOver() || gameResult) return;
+    
+    const winner = playerColor === 'white' ? 'black' : 'white';
+    setGameResult({ winner, reason: 'resign' });
+    
+    if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({
+        type: 'game_over',
+        payload: { result: winner === 'white' ? '1-0' : '0-1', reason: 'resign', winner }
+      }));
+    }
+  }
 
   function makeAMove(move: any) {
     try {
@@ -318,17 +372,6 @@ export default function Game() {
   function onSquareClick({ square }: { square: string }) {
     console.log("onSquareClick:", square);
     getMoveOptions(square as Square);
-  }
-
-  function resetGame() {
-    setGame(new Chess());
-    setMoveHistory([]);
-    setFrozenWhiteTime(600);
-    setFrozenBlackTime(600);
-    setMyTime(600);
-    setOpponentTime(600);
-    setOptionSquares({});
-    // Should probably reconnect to new game ID
   }
 
   const isGameOver = game.isGameOver();
@@ -458,18 +501,34 @@ export default function Game() {
                       </div>
                   </div>
               )}
-              {isGameOver && (
+              {(isGameOver || gameResult) && (
                   <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center rounded-lg z-20 animate-in fade-in zoom-in">
                       <div className="bg-neutral-800 p-8 rounded-2xl border border-amber-500/20 shadow-2xl flex flex-col items-center gap-6 text-center">
                           <Crown size={48} className="text-amber-500" />
                           <div>
                               <div className="text-4xl font-bold bg-gradient-to-r from-amber-200 to-amber-500 bg-clip-text text-transparent mb-2">
-                                  {game.isCheckmate() 
-                                      ? (game.turn() === (playerColor === 'white' ? 'b' : 'w') ? "VICTORY" : "DEFEAT") 
-                                      : "DRAW"}
+                                  {(() => {
+                                    // Determine the result text
+                                    if (gameResult) {
+                                      if (isSpectator) {
+                                        return `${gameResult.winner.toUpperCase()} WINS`;
+                                      }
+                                      return gameResult.winner === playerColor ? "VICTORY" : "DEFEAT";
+                                    }
+                                    if (game.isCheckmate()) {
+                                      if (isSpectator) {
+                                        const winner = game.turn() === 'w' ? 'black' : 'white';
+                                        return `${winner.toUpperCase()} WINS`;
+                                      }
+                                      return game.turn() === (playerColor === 'white' ? 'b' : 'w') ? "VICTORY" : "DEFEAT";
+                                    }
+                                    return "DRAW";
+                                  })()}
                               </div>
                               <div className="text-neutral-400">
-                                  {game.isCheckmate() 
+                                  {gameResult 
+                                    ? `by ${gameResult.reason.charAt(0).toUpperCase() + gameResult.reason.slice(1)}`
+                                    : game.isCheckmate() 
                                       ? `by Checkmate` 
                                       : `by ${game.isDraw() ? 'Insufficient Material' : 'Stalemate'}`}
                               </div>
@@ -501,13 +560,20 @@ export default function Game() {
           <div className="flex-1">
             <MoveList moves={moveHistory} />
           </div>
-          <button
-            onClick={resetGame}
-            className="w-full py-4 bg-neutral-700 hover:bg-neutral-600 text-white rounded-lg font-bold flex items-center justify-center gap-2 transition-all hover:translate-y-[-2px] active:translate-y-0"
-          >
-            <RefreshCw size={20} />
-            New Game
-          </button>
+          {/* Resign button - only for players, not spectators */}
+          {!isSpectator && (
+            <button
+              onClick={handleResign}
+              disabled={isGameOver || !!gameResult}
+              className={`w-full py-4 text-white rounded-lg font-bold flex items-center justify-center gap-2 transition-all
+                ${isGameOver || gameResult 
+                  ? 'bg-neutral-800 text-neutral-500 cursor-not-allowed' 
+                  : 'bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-600/30 hover:translate-y-[-2px] active:translate-y-0'}`}
+            >
+              <Flag size={20} />
+              Resign
+            </button>
+          )}
         </div>
       </div>
     </div>
