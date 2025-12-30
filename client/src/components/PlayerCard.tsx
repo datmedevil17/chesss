@@ -7,9 +7,10 @@ interface PlayerCardProps {
   time: number;
   isActive: boolean;
   isBlack?: boolean;
+  hideTime?: boolean;
 }
 
-export default function PlayerCard({ name, rating, time, isActive, isBlack }: PlayerCardProps) {
+export default function PlayerCard({ name, rating, time, isActive, isBlack, hideTime }: PlayerCardProps) {
   return (
     <div className={`
       flex items-center justify-between p-3 rounded-xl border transition-all duration-300
@@ -40,11 +41,14 @@ export default function PlayerCard({ name, rating, time, isActive, isBlack }: Pl
         </div>
       </div>
 
-      <Clock 
-        time={time} 
-        isActive={isActive} 
-        isLowTime={time < 30} 
-      />
+      {!hideTime && (
+        <Clock 
+          time={time} 
+          isActive={isActive} 
+          isLowTime={time < 30} 
+        />
+      )}
     </div>
   );
 }
+

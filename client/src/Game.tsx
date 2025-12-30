@@ -50,13 +50,49 @@ export default function Game() {
   const [gameResult, setGameResult] = useState<{ winner: string; reason: string } | null>(null);
   const lastSentMoveRef = useRef<string | null>(null); // Track last move we sent to skip echo
   const aiEngineRef = useRef<any>(null); // Reference to AI engine for bot games
+  const AI_GAME_KEY = 'chess_ai_game';
+  const aiGameInitialized = useRef(false);
 
-  // Initialize AI engine for bot games
+  // Helper to clear AI game from localStorage
+  const clearAIGameStorage = () => {
+    localStorage.removeItem(AI_GAME_KEY);
+    console.log('AI game cleared from localStorage');
+  };
+
+  // Helper to save AI game to localStorage
+  const saveAIGame = (fen: string, history: string[]) => {
+    if (!isBot) return;
+    const gameState = { fen, history };
+    localStorage.setItem(AI_GAME_KEY, JSON.stringify(gameState));
+    console.log('AI game saved to localStorage:', fen);
+  };
+
+  // Initialize AI engine for bot games + restore from localStorage
   useEffect(() => {
     if (isBot) {
       aiEngineRef.current = new ChessAI();
       setStatus('Active');
       setPlayerColor('white'); // Player is always white vs AI
+      
+      // Try to restore saved game
+      const saved = localStorage.getItem(AI_GAME_KEY);
+      if (saved) {
+        try {
+          const { fen, history } = JSON.parse(saved);
+          console.log('Restoring AI game from localStorage:', fen, history);
+          const restoredGame = new Chess(fen);
+          setGame(restoredGame);
+          setMoveHistory(history || []);
+          setCurrentTurn(restoredGame.turn() === 'w' ? 'white' : 'black');
+          console.log('AI game restored successfully');
+        } catch (e) {
+          console.error('Failed to restore AI game:', e);
+          clearAIGameStorage();
+        }
+      }
+      
+      // Mark as initialized AFTER restoring
+      aiGameInitialized.current = true;
       console.log('AI Engine initialized for bot game');
     }
   }, [isBot]);
@@ -64,6 +100,7 @@ export default function Game() {
   // AI move effect - triggers when game changes and it's AI's turn
   useEffect(() => {
     if (!isBot || game.isGameOver() || gameResult) return;
+    if (!aiGameInitialized.current) return; // Wait for initialization
     
     // Only make AI move if it's black's turn
     if (game.turn() !== 'b') return;
@@ -96,6 +133,8 @@ export default function Game() {
             setMoveHistory(g.history());
             setCurrentTurn('white');
             console.log('AI moved:', result.san);
+            // Save after AI move
+            saveAIGame(g.fen(), g.history());
           } else {
             console.error('AI move was invalid:', fromSquare, toSquare);
           }
@@ -107,7 +146,6 @@ export default function Game() {
     
     return () => clearTimeout(timeoutId);
   }, [isBot, game, gameResult]);
-
 
   // WebSocket connection for online games only (not bot games)
   useEffect(() => {
@@ -312,12 +350,25 @@ export default function Game() {
     const winner = playerColor === 'white' ? 'black' : 'white';
     setGameResult({ winner, reason: 'resign' });
     
+    // Clear AI game from localStorage on resign
+    if (isBot) {
+      clearAIGameStorage();
+    }
+    
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify({
         type: 'game_over',
         payload: { result: winner === 'white' ? '1-0' : '0-1', reason: 'resign', winner }
       }));
     }
+  }
+
+  // Handle leaving/navigating away from AI game
+  function handleLeaveGame() {
+    if (isBot) {
+      clearAIGameStorage();
+    }
+    navigate('/');
   }
 
   function makeAMove(move: any) {
@@ -333,6 +384,9 @@ export default function Game() {
         
         // For bot games, trigger AI move instead of sending to server
         if (isBot) {
+          // Save game state after player move
+          saveAIGame(g.fen(), g.history());
+          
           // Check if game is over after player move
           if (g.isGameOver()) {
             let winner = "";
@@ -345,6 +399,7 @@ export default function Game() {
             }
             if (winner || reason === "draw") {
               setGameResult({ winner, reason });
+              clearAIGameStorage(); // Clear completed game
             }
           } else {
             // AI move is triggered automatically by useEffect watching game state
@@ -482,15 +537,15 @@ export default function Game() {
     <div className="min-h-screen bg-neutral-900 flex flex-col items-center p-4 md:p-8">
       <div className="w-full max-w-7xl flex items-center justify-between mb-6">
         <button
-          onClick={() => navigate('/')}
+          onClick={() => isBot ? handleLeaveGame() : navigate('/')}
           className="flex items-center gap-2 text-neutral-400 hover:text-white transition-colors"
         >
           <ArrowLeft size={20} />
           Back to Home
         </button>
         <div className="text-xl font-bold text-neutral-200 flex items-center gap-4">
-           <span>{isBot ? "Vs Stockfish" : "Online Match"}</span>
-           <span className="text-xs bg-neutral-800 px-2 py-1 rounded text-neutral-400">10 min</span>
+           <span>{isBot ? "AI Match" : "Online Match"}</span>
+           {!isBot && <span className="text-xs bg-neutral-800 px-2 py-1 rounded text-neutral-400">10 min</span>}
         </div>
         <div className="flex items-center gap-3">
           {isSpectator && (
@@ -538,6 +593,7 @@ export default function Game() {
                   : currentTurn !== playerColor && !isGameOver
               }
               isBlack={isSpectator ? true : playerColor === 'white'}
+              hideTime={isBot}
            />
            <div className="flex-1 min-h-[300px]">
              {!isBot ? (
@@ -573,6 +629,7 @@ export default function Game() {
                   : currentTurn === playerColor && !isGameOver
               }
               isBlack={isSpectator ? false : playerColor !== 'white'}
+              hideTime={isBot}
            />
         </div>
 
