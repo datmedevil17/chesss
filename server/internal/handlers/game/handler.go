@@ -47,7 +47,7 @@ func (h *Handler) WSHandler(c *gin.Context) {
 	// 2. Fetch Game to determine Role
 	var role = "spectator"
 	var gameModel models.Game
-	if err := database.GetDB().Where("id = ?", gameID).First(&gameModel).Error; err != nil {
+	if err := database.GetDB().Preload("White").Preload("Black").Where("id = ?", gameID).First(&gameModel).Error; err != nil {
 		log.Printf("Game not found: %v", err)
 		// We might still allow connection as spectator or just return?
 		// For now, let's proceed but role will certainly be spectator if game not found (or error)
@@ -126,6 +126,8 @@ func (h *Handler) WSHandler(c *gin.Context) {
 			History:     history,
 			WhiteID:     gameModel.WhiteID,
 			BlackID:     gameModel.BlackID,
+			WhiteName:   gameModel.White.Username,
+			BlackName:   gameModel.Black.Username,
 			Status:      gameModel.Status,
 			Color:       role,
 			WhiteTime:   whiteTime,

@@ -34,6 +34,9 @@ export default function Game() {
   const gameId = searchParams.get('id') || 'test-room'; 
   const isBot = searchParams.get('bot') === 'true';
   const [playerColor, setPlayerColor] = useState(searchParams.get('color') || 'white');
+  const [isSpectator, setIsSpectator] = useState(false);
+  const [whiteName, setWhiteName] = useState('White Player');
+  const [blackName, setBlackName] = useState('Black Player');
   const lastSentMoveRef = useRef<string | null>(null); // Track last move we sent to skip echo
 
 
@@ -55,7 +58,7 @@ export default function Game() {
             switch (data.type) {
                 case 'init':
                     // Initialize game state
-                    const { fen, history, color, status, white_time, black_time, last_move_at, current_turn } = data.payload;
+                    const { fen, history, color, status, white_time, black_time, last_move_at, current_turn, white_name, black_name } = data.payload;
                     const newGame = new Chess(fen);
                     
                     // Replay move history to reconstruct board state
@@ -75,9 +78,16 @@ export default function Game() {
                     }
                     
                     setGame(newGame);
-                    if (color) setPlayerColor(color);
+                    if (color) {
+                        setPlayerColor(color);
+                        setIsSpectator(color === 'spectator');
+                    }
                     setMoveHistory(newGame.history()); // Use game's history for SAN notation
                     if (status) setStatus(status === 'active' ? 'Active' : 'Waiting for opponent');
+                    
+                    // Set player names
+                    if (white_name) setWhiteName(white_name);
+                    if (black_name) setBlackName(black_name);
                     
                     // Set frozen times and clock state from server
                     if (white_time !== undefined) setFrozenWhiteTime(white_time);
@@ -244,7 +254,7 @@ export default function Game() {
     return null;
   }
 
-  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [_debugLogs, setDebugLogs] = useState<string[]>([]);
 
   function addLog(msg: string) {
       setDebugLogs(prev => [msg, ...prev].slice(0, 5));
@@ -344,18 +354,32 @@ export default function Game() {
            <span>{isBot ? "Vs Stockfish" : "Online Match"}</span>
            <span className="text-xs bg-neutral-800 px-2 py-1 rounded text-neutral-400">10 min</span>
         </div>
-        <div className="w-24"></div> 
+        <div className="w-24 flex justify-end">
+          {isSpectator && (
+            <span className="px-2 py-1 bg-purple-600/80 text-white text-xs font-semibold rounded-md flex items-center gap-1">
+              👁 Spectator
+            </span>
+          )}
+        </div> 
       </div>
 
       <div className="w-full max-w-7xl grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] gap-6 items-start h-[800px]">
         <div className="flex flex-col h-full gap-4 order-2 lg:order-1 lg:h-[600px] w-full lg:w-80">
-           {/* Opponent card - always at top */}
+           {/* Top player card - for spectators: black player, for players: opponent */}
            <PlayerCard 
-              name={isBot ? "Stockfish 16" : "Opponent"} 
+              name={
+                isSpectator 
+                  ? blackName 
+                  : (isBot ? "Stockfish 16" : (playerColor === 'white' ? blackName : whiteName))
+              } 
               rating={isBot ? 3000 : 1200} 
-              time={opponentTime}
-              isActive={currentTurn !== playerColor && !isGameOver}
-              isBlack={playerColor === 'white'}
+              time={isSpectator ? (playerColor === 'white' ? opponentTime : myTime) : opponentTime}
+              isActive={
+                isSpectator 
+                  ? currentTurn === 'black' && !isGameOver 
+                  : currentTurn !== playerColor && !isGameOver
+              }
+              isBlack={isSpectator ? true : playerColor === 'white'}
            />
            <div className="flex-1 min-h-[300px]">
              <Chat messages={messages} onSendMessage={(text) => {
@@ -367,13 +391,21 @@ export default function Game() {
                 }
              }} />
            </div>
-           {/* Your card - always at bottom */}
+           {/* Bottom player card - for spectators: white player, for players: you */}
            <PlayerCard 
-              name="You" 
+              name={
+                isSpectator 
+                  ? whiteName 
+                  : "You"
+              } 
               rating={1200} 
-              time={myTime}
-              isActive={currentTurn === playerColor && !isGameOver}
-              isBlack={playerColor !== 'white'}
+              time={isSpectator ? (playerColor === 'white' ? myTime : opponentTime) : myTime}
+              isActive={
+                isSpectator 
+                  ? currentTurn === 'white' && !isGameOver 
+                  : currentTurn === playerColor && !isGameOver
+              }
+              isBlack={isSpectator ? false : playerColor !== 'white'}
            />
         </div>
 

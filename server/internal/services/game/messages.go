@@ -20,8 +20,10 @@ type InitPayload struct {
 	History     []string `json:"history"`
 	WhiteID     uint     `json:"white_id"`
 	BlackID     uint     `json:"black_id"`
+	WhiteName   string   `json:"white_name"` // Username of white player
+	BlackName   string   `json:"black_name"` // Username of black player
 	Status      string   `json:"status"`
-	Color       string   `json:"color"`      // Color of the connected client
+	Color       string   `json:"color"`      // Color of the connected client ("white", "black", or "spectator")
 	WhiteTime   int      `json:"white_time"` // Frozen time at last move (seconds)
 	BlackTime   int      `json:"black_time"`
 	LastMoveAt  int64    `json:"last_move_at"` // Unix timestamp (ms) when last move was made
