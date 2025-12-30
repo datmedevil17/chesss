@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Chess, type Square } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, RefreshCw, Crown } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Crown, Share2, LogOut } from 'lucide-react';
 import MoveList from './components/MoveList';
 import PlayerCard from './components/PlayerCard';
 import Chat from './components/Chat';
@@ -354,12 +354,32 @@ export default function Game() {
            <span>{isBot ? "Vs Stockfish" : "Online Match"}</span>
            <span className="text-xs bg-neutral-800 px-2 py-1 rounded text-neutral-400">10 min</span>
         </div>
-        <div className="w-24 flex justify-end">
+        <div className="flex items-center gap-3">
           {isSpectator && (
-            <span className="px-2 py-1 bg-purple-600/80 text-white text-xs font-semibold rounded-md flex items-center gap-1">
-              👁 Spectator
-            </span>
+            <>
+              <span className="px-2 py-1 bg-purple-600/80 text-white text-xs font-semibold rounded-md flex items-center gap-1">
+                👁 Spectator
+              </span>
+              <button
+                onClick={() => navigate('/')}
+                className="flex items-center gap-1 px-3 py-1.5 bg-red-600/20 hover:bg-red-600/40 text-red-400 hover:text-red-300 text-sm font-medium rounded-md transition-colors border border-red-600/30"
+              >
+                <LogOut size={14} />
+                Leave
+              </button>
+            </>
           )}
+          <button
+            onClick={() => {
+              const url = window.location.href;
+              navigator.clipboard.writeText(url);
+              alert('Game link copied to clipboard!');
+            }}
+            className="flex items-center gap-1 px-3 py-1.5 bg-neutral-700 hover:bg-neutral-600 text-neutral-300 hover:text-white text-sm font-medium rounded-md transition-colors"
+          >
+            <Share2 size={14} />
+            Share
+          </button>
         </div> 
       </div>
 

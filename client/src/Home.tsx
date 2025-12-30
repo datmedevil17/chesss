@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Crown } from 'lucide-react';
+import { Crown, Tv, X } from 'lucide-react';
 import { useAuth } from './context/AuthContext';
 import api from './api/client';
 
@@ -8,6 +8,8 @@ export default function Home() {
   const navigate = useNavigate();
   const { isAuthenticated, user } = useAuth();
   const [isSearching, setIsSearching] = useState(false);
+  const [showStreamModal, setShowStreamModal] = useState(false);
+  const [gameLink, setGameLink] = useState('');
   const pollRef = useRef<any>(null);
 
   async function handleFindMatch() {
@@ -57,8 +59,56 @@ export default function Home() {
       }
   }
 
+  function handleWatchStream() {
+      // Extract game ID from link or use as-is
+      let gameId = gameLink.trim();
+      // If user pasted a full URL, extract the id parameter
+      if (gameId.includes('id=')) {
+          const match = gameId.match(/id=([^&]+)/);
+          if (match) gameId = match[1];
+      }
+      if (gameId) {
+          setShowStreamModal(false);
+          setGameLink('');
+          navigate(`/game?id=${gameId}`);
+      }
+  }
+
   return (
     <div className="min-h-screen bg-neutral-900 flex flex-col items-center justify-center text-white relative">
+      {/* Stream Modal */}
+      {showStreamModal && (
+          <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center">
+              <div className="bg-neutral-800 p-8 rounded-2xl border border-neutral-700 shadow-2xl flex flex-col items-center gap-6 animate-in fade-in zoom-in w-96 relative">
+                  <button 
+                      onClick={() => setShowStreamModal(false)}
+                      className="absolute top-4 right-4 text-neutral-400 hover:text-white transition-colors"
+                  >
+                      <X size={20} />
+                  </button>
+                  <div className="flex items-center gap-3">
+                      <Tv size={32} className="text-purple-500" />
+                      <h2 className="text-2xl font-bold text-white">Watch a Game</h2>
+                  </div>
+                  <p className="text-neutral-400 text-center">Enter a game link or ID to spectate</p>
+                  <input
+                      type="text"
+                      value={gameLink}
+                      onChange={(e) => setGameLink(e.target.value)}
+                      placeholder="Game ID or URL"
+                      className="w-full px-4 py-3 bg-neutral-900 border border-neutral-600 rounded-lg text-white placeholder-neutral-500 focus:outline-none focus:border-purple-500 transition-colors"
+                      onKeyDown={(e) => e.key === 'Enter' && handleWatchStream()}
+                  />
+                  <button 
+                      onClick={handleWatchStream}
+                      className="w-full px-6 py-3 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg transition-all"
+                  >
+                      Watch Stream
+                  </button>
+              </div>
+          </div>
+      )}
+
       {isSearching && (
           <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center">
               <div className="bg-neutral-800 p-8 rounded-2xl border border-neutral-700 shadow-2xl flex flex-col items-center gap-6 animate-in fade-in zoom-in">
@@ -109,6 +159,13 @@ export default function Home() {
                           className="px-8 py-4 bg-neutral-700 hover:bg-neutral-600 text-white font-bold text-xl rounded-lg transition-all shadow-lg hover:scale-105 flex items-center gap-2"
                         >
                           PLAY ONLINE
+                        </button>
+                        <button
+                          onClick={() => setShowStreamModal(true)}
+                          className="px-8 py-4 bg-purple-600 hover:bg-purple-500 text-white font-bold text-xl rounded-lg transition-all shadow-lg hover:scale-105 flex items-center gap-2"
+                        >
+                          <Tv size={24} />
+                          WATCH STREAM
                         </button>
                     </div>
                 </>
