@@ -11,7 +11,7 @@ type Game struct {
 	White User `gorm:"foreignKey:WhiteID"`
 	Black User `gorm:"foreignKey:BlackID"`
 
-	Status string `gorm:"index"` 
+	Status string `gorm:"index"`
 	// waiting | active | finished
 
 	Result string
@@ -29,6 +29,11 @@ type Game struct {
 	FEN string `gorm:"type:text"`
 
 	Moves []Move `gorm:"foreignKey:GameID"`
+
+	// Time tracking (in seconds)
+	WhiteTimeRemaining int        `gorm:"default:600"` // Default 10 minutes
+	BlackTimeRemaining int        `gorm:"default:600"`
+	LastMoveAt         *time.Time // When last move was made (for calculating elapsed time)
 
 	StartedAt  *time.Time
 	FinishedAt *time.Time

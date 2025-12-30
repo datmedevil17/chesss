@@ -5,6 +5,8 @@ import (
 	"log"
 	"time"
 
+	"github.com/datmedevil17/chesss/internal/database"
+	"github.com/datmedevil17/chesss/internal/models"
 	"github.com/gorilla/websocket"
 )
 
@@ -75,6 +77,29 @@ func (c *Client) ReadPump(room *GameRoom) {
 				continue
 			}
 
+			// First, deduct time from the player who just moved
+			elapsed := int(time.Since(room.LastMoveTime).Seconds())
+			if c.Role == "white" {
+				room.WhiteTime -= elapsed
+				if room.WhiteTime < 0 {
+					room.WhiteTime = 0
+				}
+			} else {
+				room.BlackTime -= elapsed
+				if room.BlackTime < 0 {
+					room.BlackTime = 0
+				}
+			}
+			room.LastMoveTime = time.Now()
+
+			// Update times in database
+			now := time.Now()
+			database.GetDB().Model(&models.Game{}).Where("id = ?", room.GameID).Updates(map[string]interface{}{
+				"white_time_remaining": room.WhiteTime,
+				"black_time_remaining": room.BlackTime,
+				"last_move_at":         now,
+			})
+
 			// Toggle Turn
 			if room.CurrentTurn == "white" {
 				room.CurrentTurn = "black"
@@ -82,13 +107,47 @@ func (c *Client) ReadPump(room *GameRoom) {
 				room.CurrentTurn = "white"
 			}
 
-			// Broadcast move to everyone
-			// Payload should be the move string (UCI or SAN)
-			// We might want to validate it here, but for now just broadcast
-			// We re-marshal it to ensure consistent format or add metadata?
-			// For now, just broadcasting the raw message is risky if we want strict typing.
-			// Let's re-broadcast the exact same message structure.
-			room.Broadcast <- message
+			// Persist move to database
+			moveStr, _ := wsMsg.Payload.(string)
+			from := ""
+			to := ""
+			promo := ""
+			if len(moveStr) >= 4 {
+				from = moveStr[0:2]
+				to = moveStr[2:4]
+				if len(moveStr) > 4 {
+					promo = string(moveStr[4])
+				}
+			}
+
+			move := models.Move{
+				GameID:     room.GameID,
+				PlayerID:   c.UserID,
+				MoveNumber: len(room.MoveHistory) + 1,
+				FromSquare: from,
+				ToSquare:   to,
+				Promotion:  promo,
+			}
+			if err := database.GetDB().Create(&move).Error; err != nil {
+				log.Printf("Failed to save move: %v", err)
+			} else {
+				log.Printf("Saved move %d: %s (White: %ds, Black: %ds)", move.MoveNumber, moveStr, room.WhiteTime, room.BlackTime)
+			}
+			room.MoveHistory = append(room.MoveHistory, moveStr)
+
+			// Broadcast move with current times to everyone
+			moveMsg := WSMessage{
+				Type: MsgMove,
+				Payload: MovePayload{
+					Move:        moveStr,
+					WhiteTime:   room.WhiteTime,
+					BlackTime:   room.BlackTime,
+					LastMoveAt:  room.LastMoveTime.UnixMilli(),
+					CurrentTurn: room.CurrentTurn,
+				},
+			}
+			moveMsgBytes, _ := json.Marshal(moveMsg)
+			room.Broadcast <- moveMsgBytes
 			log.Printf("Broadcasted move from %s to room %s", c.Role, room.GameID)
 
 		case MsgChat:
@@ -126,6 +185,35 @@ func (c *Client) ReadPump(room *GameRoom) {
 						room.Broadcast <- bytes
 					}
 				}
+			}
+
+		case MsgGameOver:
+			// Handle game end - update database
+			if payloadMap, ok := wsMsg.Payload.(map[string]interface{}); ok {
+				result := ""
+				reason := ""
+				winner := ""
+				if r, ok := payloadMap["result"].(string); ok {
+					result = r
+				}
+				if r, ok := payloadMap["reason"].(string); ok {
+					reason = r
+				}
+				if w, ok := payloadMap["winner"].(string); ok {
+					winner = w
+				}
+
+				now := time.Now()
+				database.GetDB().Model(&models.Game{}).Where("id = ?", room.GameID).Updates(map[string]interface{}{
+					"status":      "finished",
+					"result":      result,
+					"reason":      reason,
+					"finished_at": now,
+				})
+				log.Printf("Game %s ended: Result=%s, Reason=%s, Winner=%s", room.GameID, result, reason, winner)
+
+				// Broadcast game_over to all clients
+				room.Broadcast <- message
 			}
 
 		default:

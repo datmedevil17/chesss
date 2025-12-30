@@ -83,6 +83,37 @@ func (h *Handler) WSHandler(c *gin.Context) {
 		game.NewBot(room, "stockfish")
 	}
 
+	// Load move history from database
+	var moves []models.Move
+	database.GetDB().Where("game_id = ?", gameID).Order("move_number ASC").Find(&moves)
+	history := make([]string, len(moves))
+	for i, m := range moves {
+		history[i] = m.FromSquare + m.ToSquare + m.Promotion
+	}
+
+	// Initialize room's move history and turn from DB state
+	room.MoveHistory = history
+	if len(history)%2 == 0 {
+		room.CurrentTurn = "white"
+	} else {
+		room.CurrentTurn = "black"
+	}
+
+	// Initialize room times from DB
+	whiteTime := gameModel.WhiteTimeRemaining
+	blackTime := gameModel.BlackTimeRemaining
+	if whiteTime == 0 {
+		whiteTime = 600 // Default 10 minutes if not set
+	}
+	if blackTime == 0 {
+		blackTime = 600
+	}
+	room.WhiteTime = whiteTime
+	room.BlackTime = blackTime
+
+	// Calculate LastMoveAt - use room.LastMoveTime if available, otherwise use now
+	lastMoveAt := room.LastMoveTime.UnixMilli()
+
 	// Send Init JSON
 	fen := gameModel.FEN
 	if fen == "" || fen == "startpos" {
@@ -91,12 +122,16 @@ func (h *Handler) WSHandler(c *gin.Context) {
 	initMsg := game.WSMessage{
 		Type: game.MsgInit,
 		Payload: game.InitPayload{
-			FEN:     fen,
-			WhiteID: gameModel.WhiteID,
-			BlackID: gameModel.BlackID,
-			Status:  gameModel.Status,
-			Color:   role,
-			// History: []string{}, // TODO: Populate from DB
+			FEN:         fen,
+			History:     history,
+			WhiteID:     gameModel.WhiteID,
+			BlackID:     gameModel.BlackID,
+			Status:      gameModel.Status,
+			Color:       role,
+			WhiteTime:   whiteTime,
+			BlackTime:   blackTime,
+			LastMoveAt:  lastMoveAt,
+			CurrentTurn: room.CurrentTurn,
 		},
 	}
 	initBytes, _ := json.Marshal(initMsg)

@@ -13,8 +13,17 @@ export default function Game() {
   const [moveHistory, setMoveHistory] = useState<string[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
   const [status, setStatus] = useState("Connecting...");
-  const [whiteTime, setWhiteTime] = useState(600);
-  const [blackTime, setBlackTime] = useState(600);
+  
+  // Timestamp-based clock state (server values)
+  const [frozenWhiteTime, setFrozenWhiteTime] = useState(600);
+  const [frozenBlackTime, setFrozenBlackTime] = useState(600);
+  const [lastMoveAt, setLastMoveAt] = useState(Date.now());
+  const [currentTurn, setCurrentTurn] = useState<'white' | 'black'>('white');
+  
+  // Displayed times - perspective-based (computed from player's view)
+  const [myTime, setMyTime] = useState(600);
+  const [opponentTime, setOpponentTime] = useState(600);
+  
   const [optionSquares, setOptionSquares] = useState<Record<string, { background: string; borderRadius?: string }>>({});
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -24,7 +33,8 @@ export default function Game() {
   // Generate a random game ID if none provided (mock matchmaking)
   const gameId = searchParams.get('id') || 'test-room'; 
   const isBot = searchParams.get('bot') === 'true';
-  const [playerColor, setPlayerColor] = useState(searchParams.get('color') || 'white'); 
+  const [playerColor, setPlayerColor] = useState(searchParams.get('color') || 'white');
+  const lastSentMoveRef = useRef<string | null>(null); // Track last move we sent to skip echo
 
 
   useEffect(() => {
@@ -45,17 +55,56 @@ export default function Game() {
             switch (data.type) {
                 case 'init':
                     // Initialize game state
-                    const { fen, history, color, status } = data.payload;
+                    const { fen, history, color, status, white_time, black_time, last_move_at, current_turn } = data.payload;
                     const newGame = new Chess(fen);
+                    
+                    // Replay move history to reconstruct board state
+                    if (history && history.length > 0) {
+                        for (const uciMove of history) {
+                            try {
+                                // Try UCI format (e2e4)
+                                const from = uciMove.slice(0, 2);
+                                const to = uciMove.slice(2, 4);
+                                const promotion = uciMove.length > 4 ? uciMove[4] : undefined;
+                                newGame.move({ from, to, promotion });
+                            } catch (e) {
+                                console.error("Failed to replay move:", uciMove, e);
+                            }
+                        }
+                        console.log("Replayed", history.length, "moves. FEN:", newGame.fen());
+                    }
+                    
                     setGame(newGame);
                     if (color) setPlayerColor(color);
-                    setMoveHistory(history || []);
+                    setMoveHistory(newGame.history()); // Use game's history for SAN notation
                     if (status) setStatus(status === 'active' ? 'Active' : 'Waiting for opponent');
+                    
+                    // Set frozen times and clock state from server
+                    if (white_time !== undefined) setFrozenWhiteTime(white_time);
+                    if (black_time !== undefined) setFrozenBlackTime(black_time);
+                    if (last_move_at !== undefined) setLastMoveAt(last_move_at);
+                    if (current_turn) setCurrentTurn(current_turn);
+                    console.log("Clock init - White:", white_time, "Black:", black_time, "LastMove:", last_move_at, "Turn:", current_turn);
                     break;
 
                 case 'move':
-                    // Handle opponent move
-                    const moveStr = data.payload; // UCI string e.g. "e2e4"
+                    // Handle opponent move - payload is now {move, white_time, black_time}
+                    const movePayload = data.payload;
+                    const moveStr = typeof movePayload === 'string' ? movePayload : movePayload.move;
+                    
+                    // Skip if this is our own move echoed back (we already applied it locally)
+                    if (lastSentMoveRef.current === moveStr) {
+                        lastSentMoveRef.current = null; // Clear it
+                        // Still sync frozen times from server even for our own move
+                        if (typeof movePayload === 'object') {
+                            if (movePayload.white_time !== undefined) setFrozenWhiteTime(movePayload.white_time);
+                            if (movePayload.black_time !== undefined) setFrozenBlackTime(movePayload.black_time);
+                            if (movePayload.last_move_at !== undefined) setLastMoveAt(movePayload.last_move_at);
+                            if (movePayload.current_turn) setCurrentTurn(movePayload.current_turn);
+                        }
+                        break;
+                    }
+                    
                     setGame((prevGame) => {
                         const g = new Chess(prevGame.fen());
                         try {
@@ -73,6 +122,15 @@ export default function Game() {
                         setMoveHistory(g.history());
                         return g;
                     });
+                    
+                    // Sync clock state from server (frozen times + timestamp)
+                    if (typeof movePayload === 'object') {
+                        if (movePayload.white_time !== undefined) setFrozenWhiteTime(movePayload.white_time);
+                        if (movePayload.black_time !== undefined) setFrozenBlackTime(movePayload.black_time);
+                        if (movePayload.last_move_at !== undefined) setLastMoveAt(movePayload.last_move_at);
+                        if (movePayload.current_turn) setCurrentTurn(movePayload.current_turn);
+                        console.log("Clock sync - White:", movePayload.white_time, "Black:", movePayload.black_time, "Turn:", movePayload.current_turn);
+                    }
                     break;
 
                 case 'chat':
@@ -97,15 +155,34 @@ export default function Game() {
     };
   }, [gameId, isBot, token]);
 
-  // Timer logic (simplified)
+  // Timer logic - perspective-based calculation
+  // If it's MY turn: my clock decrements, opponent's is frozen
+  // If it's OPPONENT's turn: opponent's clock decrements, mine is frozen
   useEffect(() => {
     if (game.isGameOver()) return;
     const timer = setInterval(() => {
-      if (game.turn() === 'w') setWhiteTime(t => Math.max(0, t - 1));
-      else setBlackTime(t => Math.max(0, t - 1));
-    }, 1000);
+      const now = Date.now();
+      const elapsedSeconds = Math.floor((now - lastMoveAt) / 1000);
+      
+      // Determine my frozen time and opponent's frozen time based on my color
+      const myFrozenTime = playerColor === 'white' ? frozenWhiteTime : frozenBlackTime;
+      const oppFrozenTime = playerColor === 'white' ? frozenBlackTime : frozenWhiteTime;
+      
+      // Is it my turn?
+      const isMyTurn = currentTurn === playerColor;
+      
+      if (isMyTurn) {
+        // My clock is running
+        setMyTime(Math.max(0, myFrozenTime - elapsedSeconds));
+        setOpponentTime(oppFrozenTime); // Opponent's clock is frozen
+      } else {
+        // Opponent's clock is running
+        setOpponentTime(Math.max(0, oppFrozenTime - elapsedSeconds));
+        setMyTime(myFrozenTime); // My clock is frozen
+      }
+    }, 100);
     return () => clearInterval(timer);
-  }, [game]);
+  }, [game, frozenWhiteTime, frozenBlackTime, lastMoveAt, currentTurn, playerColor]);
 
   function makeAMove(move: any) {
     try {
@@ -121,10 +198,37 @@ export default function Game() {
         if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
            const uci = result.from + result.to + (result.promotion || '');
            console.log("Sending move:", uci);
+           lastSentMoveRef.current = uci; // Track to skip echo
            socketRef.current.send(JSON.stringify({
                type: 'move',
                payload: uci
            }));
+
+           // Check if game is over and notify server
+           if (g.isGameOver()) {
+               let resultStr = "*";
+               let reason = "unknown";
+               let winner = "";
+
+               if (g.isCheckmate()) {
+                   reason = "checkmate";
+                   // The player who just moved wins (opposite of whose turn it is now)
+                   winner = g.turn() === 'w' ? 'black' : 'white';
+                   resultStr = winner === 'white' ? '1-0' : '0-1';
+               } else if (g.isDraw()) {
+                   reason = "draw";
+                   resultStr = "1/2-1/2";
+               } else if (g.isStalemate()) {
+                   reason = "stalemate";
+                   resultStr = "1/2-1/2";
+               }
+
+               console.log("Game over:", resultStr, reason, winner);
+               socketRef.current.send(JSON.stringify({
+                   type: 'game_over',
+                   payload: { result: resultStr, reason, winner }
+               }));
+           }
         } else {
             console.error("Socket not connected or not open");
         }
@@ -209,8 +313,10 @@ export default function Game() {
   function resetGame() {
     setGame(new Chess());
     setMoveHistory([]);
-    setWhiteTime(600);
-    setBlackTime(600);
+    setFrozenWhiteTime(600);
+    setFrozenBlackTime(600);
+    setMyTime(600);
+    setOpponentTime(600);
     setOptionSquares({});
     // Should probably reconnect to new game ID
   }
@@ -243,12 +349,13 @@ export default function Game() {
 
       <div className="w-full max-w-7xl grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] gap-6 items-start h-[800px]">
         <div className="flex flex-col h-full gap-4 order-2 lg:order-1 lg:h-[600px] w-full lg:w-80">
+           {/* Opponent card - always at top */}
            <PlayerCard 
               name={isBot ? "Stockfish 16" : "Opponent"} 
               rating={isBot ? 3000 : 1200} 
-              time={blackTime} 
-              isActive={game.turn() === 'b' && !isGameOver}
-              isBlack
+              time={opponentTime}
+              isActive={currentTurn !== playerColor && !isGameOver}
+              isBlack={playerColor === 'white'}
            />
            <div className="flex-1 min-h-[300px]">
              <Chat messages={messages} onSendMessage={(text) => {
@@ -260,11 +367,13 @@ export default function Game() {
                 }
              }} />
            </div>
+           {/* Your card - always at bottom */}
            <PlayerCard 
               name="You" 
               rating={1200} 
-              time={whiteTime} 
-              isActive={game.turn() === 'w' && !isGameOver}
+              time={myTime}
+              isActive={currentTurn === playerColor && !isGameOver}
+              isBlack={playerColor !== 'white'}
            />
         </div>
 
@@ -314,10 +423,10 @@ export default function Game() {
                               </div>
                           </div>
                           <button 
-                            onClick={resetGame}
+                            onClick={() => navigate('/')}
                             className="px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-lg transition-transform hover:scale-105"
                           >
-                            Play Again
+                            Back to Lobby
                           </button>
                       </div>
                   </div>
