@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Chess, type Square } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -7,6 +7,8 @@ import MoveList from './components/MoveList';
 import PlayerCard from './components/PlayerCard';
 import Chat from './components/Chat';
 import { useAuth } from './context/AuthContext';
+// @ts-ignore - js-chess-engine doesn't have types
+import { Game as ChessAI } from 'js-chess-engine';
 
 export default function Game() {
   const [game, setGame] = useState(new Chess());
@@ -30,20 +32,90 @@ export default function Game() {
   const socketRef = useRef<WebSocket | null>(null);
   const { token } = useAuth();
 
-  // Generate a random game ID if none provided (mock matchmaking)
-  const gameId = searchParams.get('id') || 'test-room'; 
+  // Check if this is a bot game
   const isBot = searchParams.get('bot') === 'true';
+  
+  // Generate a stable game ID - use useMemo to prevent regeneration on re-renders
+  const gameId = useMemo(() => {
+    const idFromUrl = searchParams.get('id');
+    if (idFromUrl) return idFromUrl;
+    // For bot games, generate a unique ID to prevent spectators
+    if (isBot) return `bot-${crypto.randomUUID()}`;
+    return 'test-room';
+  }, [searchParams, isBot]);
   const [playerColor, setPlayerColor] = useState(searchParams.get('color') || 'white');
   const [isSpectator, setIsSpectator] = useState(false);
   const [whiteName, setWhiteName] = useState('White Player');
   const [blackName, setBlackName] = useState('Black Player');
   const [gameResult, setGameResult] = useState<{ winner: string; reason: string } | null>(null);
   const lastSentMoveRef = useRef<string | null>(null); // Track last move we sent to skip echo
+  const aiEngineRef = useRef<any>(null); // Reference to AI engine for bot games
 
-
+  // Initialize AI engine for bot games
   useEffect(() => {
+    if (isBot) {
+      aiEngineRef.current = new ChessAI();
+      setStatus('Active');
+      setPlayerColor('white'); // Player is always white vs AI
+      console.log('AI Engine initialized for bot game');
+    }
+  }, [isBot]);
+
+  // AI move effect - triggers when game changes and it's AI's turn
+  useEffect(() => {
+    if (!isBot || game.isGameOver() || gameResult) return;
+    
+    // Only make AI move if it's black's turn
+    if (game.turn() !== 'b') return;
+
+    console.log('AI thinking... Current FEN:', game.fen());
+    
+    const timeoutId = setTimeout(() => {
+      try {
+        // Create fresh AI engine with current position
+        const aiEngine = new ChessAI(game.fen());
+        
+        // Get AI move (difficulty 2 = medium)
+        const aiMove = aiEngine.aiMove(2);
+        console.log('AI calculated move:', aiMove);
+        
+        // aiMove is like { E7: 'E5' } - convert to chess.js format
+        const fromSquare = Object.keys(aiMove)[0];
+        const toSquare = aiMove[fromSquare];
+        
+        if (fromSquare && toSquare) {
+          const g = new Chess(game.fen());
+          const result = g.move({
+            from: fromSquare.toLowerCase(),
+            to: toSquare.toLowerCase(),
+            promotion: 'q' // Always promote to queen
+          });
+          
+          if (result) {
+            setGame(g);
+            setMoveHistory(g.history());
+            setCurrentTurn('white');
+            console.log('AI moved:', result.san);
+          } else {
+            console.error('AI move was invalid:', fromSquare, toSquare);
+          }
+        }
+      } catch (e) {
+        console.error('AI move failed:', e);
+      }
+    }, 500); // Small delay to feel more natural
+    
+    return () => clearTimeout(timeoutId);
+  }, [isBot, game, gameResult]);
+
+
+  // WebSocket connection for online games only (not bot games)
+  useEffect(() => {
+    // Skip WebSocket for bot games - AI runs locally
+    if (isBot) return;
+
     // Connect to WebSocket
-    const wsUrl = `ws://localhost:8080/api/v1/game/ws/${gameId}?token=${token}${isBot ? '&bot=true' : ''}`;
+    const wsUrl = `ws://localhost:8080/api/v1/game/ws/${gameId}?token=${token}`;
     console.log("Connecting to", wsUrl);
     const ws = new WebSocket(wsUrl);
 
@@ -257,8 +329,31 @@ export default function Game() {
         setGame(g);
         setMoveHistory(g.history());
         setOptionSquares({});
+        setCurrentTurn(g.turn() === 'w' ? 'white' : 'black');
         
-        // Send move to server
+        // For bot games, trigger AI move instead of sending to server
+        if (isBot) {
+          // Check if game is over after player move
+          if (g.isGameOver()) {
+            let winner = "";
+            let reason = "unknown";
+            if (g.isCheckmate()) {
+              reason = "checkmate";
+              winner = g.turn() === 'w' ? 'black' : 'white';
+            } else if (g.isDraw() || g.isStalemate()) {
+              reason = "draw";
+            }
+            if (winner || reason === "draw") {
+              setGameResult({ winner, reason });
+            }
+          } else {
+            // AI move is triggered automatically by useEffect watching game state
+            console.log('Player moved, AI will respond via useEffect');
+          }
+          return result;
+        }
+        
+        // Send move to server (for online games only)
         if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
            const uci = result.from + result.to + (result.promotion || '');
            console.log("Sending move:", uci);
@@ -445,14 +540,23 @@ export default function Game() {
               isBlack={isSpectator ? true : playerColor === 'white'}
            />
            <div className="flex-1 min-h-[300px]">
-             <Chat messages={messages} onSendMessage={(text) => {
-                if (socketRef.current) {
-                    socketRef.current.send(JSON.stringify({
-                        type: 'chat',
-                        payload: { text }
-                    }));
-                }
-             }} />
+             {!isBot ? (
+               <Chat messages={messages} onSendMessage={(text) => {
+                  if (socketRef.current) {
+                      socketRef.current.send(JSON.stringify({
+                          type: 'chat',
+                          payload: { text }
+                      }));
+                  }
+               }} />
+             ) : (
+               <div className="h-full bg-neutral-800/50 rounded-lg border border-neutral-700/50 flex items-center justify-center">
+                 <div className="text-center text-neutral-500">
+                   <p className="text-lg font-medium mb-1">Playing vs Stockfish</p>
+                   <p className="text-sm">No chat available in AI mode</p>
+                 </div>
+               </div>
+             )}
            </div>
            {/* Bottom player card - for spectators: white player, for players: you */}
            <PlayerCard 

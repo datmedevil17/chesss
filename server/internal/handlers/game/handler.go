@@ -46,11 +46,15 @@ func (h *Handler) WSHandler(c *gin.Context) {
 
 	// 2. Fetch Game to determine Role
 	var role = "spectator"
+	isBotGame := c.Query("bot") == "true"
 	var gameModel models.Game
 	if err := database.GetDB().Preload("White").Preload("Black").Where("id = ?", gameID).First(&gameModel).Error; err != nil {
 		log.Printf("Game not found: %v", err)
-		// We might still allow connection as spectator or just return?
-		// For now, let's proceed but role will certainly be spectator if game not found (or error)
+		// For bot games without a DB entry, human plays as white
+		if isBotGame {
+			role = "white"
+		}
+		// Otherwise proceed as spectator for non-bot games
 	} else {
 		if userID == gameModel.WhiteID {
 			role = "white"
@@ -77,7 +81,7 @@ func (h *Handler) WSHandler(c *gin.Context) {
 	room.Register <- client
 
 	// Check if user wants to play against AI (for testing/demo)
-	if c.Query("bot") == "true" {
+	if isBotGame {
 		// Attempt to start a bot. Assuming "stockfish" is in PATH.
 		// In production, this logic belongs in Matchmaking/Hub startup.
 		game.NewBot(room, "stockfish")
