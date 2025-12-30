@@ -111,34 +111,56 @@ export default function Game() {
     try {
       const g = new Chess(game.fen());
       const result = g.move(move);
-      setGame(g);
       
       if (result) {
+        setGame(g);
         setMoveHistory(g.history());
         setOptionSquares({});
         
         // Send move to server
         if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-            // Send SAN (e.g. "Nf3") or UCI (e.g. "g1f3")
-            // Stockfish prefers UCI "fromto". Chess.js move object has it.
            const uci = result.from + result.to + (result.promotion || '');
-           
-           // Send JSON Move
+           console.log("Sending move:", uci);
            socketRef.current.send(JSON.stringify({
                type: 'move',
                payload: uci
            }));
+        } else {
+            console.error("Socket not connected or not open");
         }
 
         return result; 
+      } else {
+          console.warn("Move invalid in chess.js:", move);
       }
     } catch (e) {
+      console.error("makeAMove error:", e);
       return null;
     }
     return null;
   }
 
-  function onDrop(sourceSquare: string, targetSquare: string | null) {
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+
+  function addLog(msg: string) {
+      setDebugLogs(prev => [msg, ...prev].slice(0, 5));
+      console.log(msg);
+  }
+
+  useEffect(() => {
+    addLog(`Status: ${status} | Color: ${playerColor} | Turn: ${game.turn()}`);
+  }, [status, playerColor, game]);
+
+  function onDrop({ sourceSquare, targetSquare }: { sourceSquare: string, targetSquare: string | null }) {
+    addLog(`Drop: ${sourceSquare}->${targetSquare}`);
+    
+    // Prevent moving if not my turn
+    const currentTurnColor = game.turn() === 'w' ? 'white' : 'black';
+    if (currentTurnColor !== playerColor) {
+        addLog(`Ignored: Not your turn (Turn: ${currentTurnColor})`);
+        return false;
+    }
+
     if (!targetSquare) return false;
     const move = makeAMove({
       from: sourceSquare,
@@ -180,6 +202,7 @@ export default function Game() {
   }
 
   function onSquareClick({ square }: { square: string }) {
+    console.log("onSquareClick:", square);
     getMoveOptions(square as Square);
   }
 
@@ -196,6 +219,10 @@ export default function Game() {
   const gameStatus = isGameOver 
     ? (game.isCheckmate() ? "Checkmate" : "Draw") 
     : (game.inCheck() ? "Check!" : "Active");
+
+  useEffect(() => {
+    console.log("Game Render - Status:", status, "FEN:", game.fen(), "MyColor:", playerColor);
+  }, [status, game, playerColor]);
 
   return (
     <div className="min-h-screen bg-neutral-900 flex flex-col items-center p-4 md:p-8">
@@ -243,18 +270,24 @@ export default function Game() {
 
         <div className="order-1 lg:order-2 flex flex-col items-center">
           <div className="bg-neutral-800 p-2 rounded-lg shadow-2xl shadow-black/50 border border-neutral-700">
-            <div className="w-[350px] md:w-[600px] aspect-square">
+            <div 
+                className="w-[350px] md:w-[600px] aspect-square relative block"
+            >
               <Chessboard 
-                  {...({ position: game.fen() } as any)}
-                  onPieceDrop={onDrop}
-                  onSquareClick={onSquareClick}
-                  customSquareStyles={optionSquares}
-                  customDarkSquareStyle={{ backgroundColor: '#779954' }}
-                  customLightSquareStyle={{ backgroundColor: '#e9edcc' }}
-                  boardOrientation={playerColor === 'black' ? 'black' : 'white'}
+                  options={{
+                    position: game.fen(),
+                    onPieceDrop: onDrop,
+                    onSquareClick: onSquareClick,
+                    onPieceClick: ({ piece }) => addLog(`Piece Click: ${piece.pieceType}`),
+                    squareStyles: optionSquares,
+                    darkSquareStyle: { backgroundColor: '#779954' },
+                    lightSquareStyle: { backgroundColor: '#e9edcc' },
+                    boardOrientation: playerColor === 'black' ? 'black' : 'white',
+                    allowDragging: true,
+                  }}
               />
               {status !== 'Active' && (
-                  <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center rounded-lg z-10">
+                  <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center rounded-lg z-10" onClick={() => addLog("Overlay Clicked")}>
                       <div className="bg-neutral-800 p-6 rounded-xl border border-neutral-700 shadow-2xl flex flex-col items-center gap-4 animate-in fade-in zoom-in">
                           <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
                           <div className="text-xl font-bold text-white">{status}</div>
